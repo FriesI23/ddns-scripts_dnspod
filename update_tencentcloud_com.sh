@@ -151,7 +151,7 @@ build_authorization() {
     local __CANONICAL_HEADERS=$(
         cat <<EOF
 content-type:application/json; charset=utf-8
-host:$__HOST
+host:$__URLHOST
 x-tc-action:$(echo $__ACTION | awk '{print tolower($0)}')
 EOF
     )
