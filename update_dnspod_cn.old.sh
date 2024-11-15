@@ -10,7 +10,7 @@
 
 # 变量声明
 local __URLBASE __HOST __DOMAIN __TYPE __CMDBASE __POST __POST1 __RECIP __RECID __TTL
-__URLBASE="https://dnsapi.cn"
+__URLBASE="https://dnspod.tencentcloudapi.com"
 
 # 从 $domain 分离主机和域名
 [ "${domain:0:2}" = "@." ] && domain="${domain/./}" # 主域名处理
