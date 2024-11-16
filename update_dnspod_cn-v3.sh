@@ -32,6 +32,7 @@ local __RECID __RECLINE __DATA __IPV6
 local __URLHOST="dnspod.tencentcloudapi.com"
 local __URLBASE="https://$__URLHOST"
 local __METHOD="POST"
+local __CONTENT_TYPE="application/json"
 
 # split __HOST __DOMAIN from $domain
 # given data:
@@ -45,7 +46,7 @@ __DOMAIN=$(printf %s "$domain" | cut -d@ -f2)
 
 tencentcloud_transfer() {
     local __CNT=0
-    local __ERR
+    local __ERR __CODE
 
     while :; do
         write_log 7 "#> $__RUNPROG"
@@ -54,8 +55,9 @@ tencentcloud_transfer() {
 
         if [ $__ERR -eq 0 ]; then
             if grep -q '"Error"' "$DATFILE"; then
-                local __CODE=$(grep -o '"Code":\s*"[^"]*' $DATFILE | grep -o '[^"]*$' | head -1)
-                write_log 3 "cURL Response Error: '$__ERR'"
+                __CODE=$(grep -o '"Code":\s*"[^"]*' $DATFILE | grep -o '[^"]*$' | head -1)
+                [[ $__CODE == "ResourceNotFound.NoDataOfRecord" ]] && break
+                write_log 3 "cURL Response Error: '$__CODE'"
                 write_log 7 "$(cat $DATFILE)" # report error
             else
                 break
@@ -65,9 +67,9 @@ tencentcloud_transfer() {
             write_log 7 "$(cat $ERRFILE)" # report error
         fi
 
-        [ $VERBOSE_MODE -gt 1 ] && {
-            # VERBOSE_MODE > 1 then NO retry
-            write_log 4 "Transfer failed - Verbose Mode: $VERBOSE_MODE - NO retry on error"
+        [ $VERBOSE -gt 1 ] && {
+            # VERBOSE > 1 then NO retry
+            write_log 4 "Transfer failed - Verbose Mode: $VERBOSE - NO retry on error"
             break
         }
 
@@ -84,11 +86,15 @@ tencentcloud_transfer() {
     done
 
     # check for error
-    grep -q '"Error":' $DATFILE && {
+    if grep -q '"Error":' $DATFILE; then
+        __CODE=$(grep -o '"Code":\s*"[^"]*' $DATFILE | grep -o '[^"]*$' | head -1)
+        [[ $__CODE == "ResourceNotFound.NoDataOfRecord" ]] && return 0
         write_log 4 "TecentCloud reported an error:"
         write_log 7 "$(cat $DATFILE)" # report error
-        return 1                      # HTTP-Fehler
-    }
+        return 1
+    fi
+
+    return 0
 }
 
 # Build base command to use
@@ -150,7 +156,7 @@ build_authorization() {
     local __CANONICAL_QUERYSTRING=""
     local __CANONICAL_HEADERS=$(
         cat <<EOF
-content-type:application/json; charset=utf-8
+content-type:$__CONTENT_TYPE
 host:$__URLHOST
 x-tc-action:$(echo $__ACTION | awk '{print tolower($0)}')
 EOF
@@ -163,6 +169,7 @@ $__METHOD
 $__CANONICAL_URI
 $__CANONICAL_QUERYSTRING
 $__CANONICAL_HEADERS
+
 $__SIGNED_HEADERS
 $__HASHED_REQUEST_PAYLOAD
 EOF
@@ -208,6 +215,8 @@ build_header() {
 
     local __AUTHORIZATION=$(build_authorization $__ACTION $__VERSION $__TIMESTAMP $__PAYLOAD)
 
+    printf '%s' "--header 'HOST: $__URLHOST' "
+    printf '%s' "--header 'Content-Type: $__CONTENT_TYPE' "
     printf '%s' "--header 'X-TC-Action: $__ACTION' "
     printf '%s' "--header 'X-TC-Version: $__VERSION' "
     printf '%s' "--header 'X-TC-Timestamp: $__TIMESTAMP' "
@@ -227,6 +236,7 @@ build_describe_record_list_request_param() {
     __PAYLOAD="$__PAYLOAD}"
 
     printf '%s' "--request POST "
+    printf '%s' "$__URLBASE "
     printf '%s' "--data '$__PAYLOAD' "
     build_header "DescribeRecordList" "2021-03-23" $__PAYLOAD
 }
@@ -235,21 +245,19 @@ build_describe_record_list_request_param() {
 # https://cloud.tencent.com/document/api/1427/56180
 build_create_record_request_param() {
     local __VALUE=$1
-    local __RECID=$2
-    local __RECLINE=$3
+    local __RECLINE=${2:-默认}
 
     local __PAYLOAD="{\"Domain\":\"$__DOMAIN\""
     __PAYLOAD="$__PAYLOAD,\"RecordType\":\"$__TYPE\""
     __PAYLOAD="$__PAYLOAD,\"RecordLine\":\"$__RECLINE\""
-    __PAYLOAD="$__PAYLOAD,\"RecordId\":$__RECID"
     __PAYLOAD="$__PAYLOAD,\"Value\":\"$__VALUE\""
-    __PAYLOAD="$__PAYLOAD,\"Remark\":\"Update By script at $(date +%s)\""
     if [[ -n "$__HOST" ]]; then
         __PAYLOAD="$__PAYLOAD,\"SubDomain\":\"$__HOST\""
     fi
     __PAYLOAD="$__PAYLOAD}"
 
     printf '%s' "--request POST "
+    printf '%s' "$__URLBASE "
     printf '%s' "--data '$__PAYLOAD' "
     build_header "CreateRecord" "2021-03-23" $__PAYLOAD
 }
@@ -258,19 +266,21 @@ build_create_record_request_param() {
 # https://cloud.tencent.com/document/api/1427/56157
 build_modify_record_request_param() {
     local __VALUE=$1
-    local __RECLINE=$2
+    local __RECLINE=${2:-默认}
+    local __RECID=$3
 
     local __PAYLOAD="{\"Domain\":\"$__DOMAIN\""
     __PAYLOAD="$__PAYLOAD,\"RecordType\":\"$__TYPE\""
     __PAYLOAD="$__PAYLOAD,\"RecordLine\":\"$__RECLINE\""
+    __PAYLOAD="$__PAYLOAD,\"RecordId\":$__RECID"
     __PAYLOAD="$__PAYLOAD,\"Value\":\"$__VALUE\""
-    __PAYLOAD="$__PAYLOAD,\"Remark\":\"Create By script at $(date +%s)\""
     if [[ -n "$__HOST" ]]; then
         __PAYLOAD="$__PAYLOAD,\"SubDomain\":\"$__HOST\""
     fi
     __PAYLOAD="$__PAYLOAD}"
 
     printf '%s' "--request POST "
+    printf '%s' "$__URLBASE "
     printf '%s' "--data '$__PAYLOAD' "
     build_header "ModifyRecord" "2021-03-23" $__PAYLOAD
 }
@@ -285,8 +295,10 @@ else
     __RECID=$(grep -o '"RecordId":[[:space:]]*[0-9]*' $DATFILE | grep -o '[0-9]*' | head -1)
 fi
 
+[ $VERBOSE -gt 1 ] && write_log 7 "Got record id: $__RECID"
+
 # extract current stored IP
-__RECLINE==$(grep -o '"Line":\s*"[^"]*' $DATFILE | grep -o '[^"]*$' | head -1)
+__RECLINE=$(grep -o '"Line":\s*"[^"]*' $DATFILE | grep -o '[^"]*$' | head -1)
 __DATA=$(grep -o '"Value":\s*"[^"]*' $DATFILE | grep -o '[^"]*$' | head -1)
 
 # check data
@@ -319,6 +331,6 @@ if [ -z "$__RECID" ]; then
     return 0
 fi
 
-__RUNPROG="$__PRGBASE $(build_modify_record_request_param $__IP $__RECID $__RECLINE)"
+__RUNPROG="$__PRGBASE $(build_modify_record_request_param $__IP $__RECLINE $__RECID)"
 tencentcloud_transfer || return 1
-return 0
+return
